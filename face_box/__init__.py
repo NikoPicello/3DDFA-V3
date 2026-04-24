@@ -27,17 +27,29 @@ class retinaface:
         H = img.shape[0]
         _, results_all = self.landmark_model.infer(img)
         if len(results_all)>0:
-            results = results_all[0] # only use the first one
-            landmarks=[]
-            for idx in [74, 83, 54, 84, 90]:
-                landmarks.append([results[idx][0], results[idx][1]])
-            landmarks = np.array(landmarks).astype(np.float32)
-            landmarks[:, -1] = H - 1 - landmarks[:, -1]
+          if len(results_all)==1:
+            idx_range = [0]
+          else:
+            idx_range = [0, 1]
 
-            trans_params, im, lm, _ = align_img(im, landmarks, self.lm3d_std)
+          trans_results = {}
+          im_results = {}
 
-            im = torch.tensor(np.array(im)/255., dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
-            return trans_params, im
+          im_orig = im  # preserve original PIL image for each face iteration
+          for res_idx in idx_range:
+              results = results_all[res_idx] # only use the first one
+              landmarks=[]
+              for idx in [74, 83, 54, 84, 90]:
+                  landmarks.append([results[idx][0], results[idx][1]])
+              landmarks = np.array(landmarks).astype(np.float32)
+              landmarks[:, -1] = H - 1 - landmarks[:, -1]
+
+              trans_params, im_aligned, lm, _ = align_img(im_orig, landmarks, self.lm3d_std)
+
+              im_tensor = torch.tensor(np.array(im_aligned)/255., dtype=torch.float32).permute(2, 0, 1).unsqueeze(0)
+              trans_results[res_idx] = trans_params
+              im_results[res_idx] = im_tensor
+          return trans_results, im_results
 
         else:
             print('no face detected! run original image')
