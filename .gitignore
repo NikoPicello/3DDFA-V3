@@ -1,4 +1,5 @@
 dependencies/BFM_to_FLAME
 examples
-assets/*
-data/*
+assets
+data
+dependencies
