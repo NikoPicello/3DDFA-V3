@@ -85,7 +85,7 @@ class MeshRenderer(nn.Module):
 
         image = None
         if feat is not None:
-            image, _ = dr.interpolate(feat, rast_out, tri)
+            image, _ = dr.interpolate(feat.contiguous(), rast_out, tri)
             image = image.permute(0, 3, 1, 2)
             image = mask * image
 
@@ -96,7 +96,7 @@ class MeshRenderer(nn.Module):
             visible_faces = visible_faces[visible_faces!=-1]
             visible_verts_idx = tri[visible_faces.long()]
             unique_visible_verts_idx = torch.unique(visible_verts_idx)
-        
+
         return mask, depth, image, unique_visible_verts_idx
 
 class MeshRenderer_UV(nn.Module):
@@ -165,7 +165,7 @@ class MeshRenderer_UV(nn.Module):
 
         image = None
         if feat is not None:
-            image, _ = dr.interpolate(feat, rast_out, tri)
+            image, _ = dr.interpolate(feat.contiguous(), rast_out, tri)
             image = image.permute(0, 3, 1, 2)
             image = mask * image
 
@@ -176,5 +176,5 @@ class MeshRenderer_UV(nn.Module):
             visible_faces = visible_faces[visible_faces!=-1]
             visible_verts_idx = tri[visible_faces.long()]
             unique_visible_verts_idx = torch.unique(visible_verts_idx)
-        
+
         return mask, depth, image, unique_visible_verts_idx

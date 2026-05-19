@@ -45,7 +45,7 @@ cam_map = {
 }
 
 activities = ['animals', 'gaze', 'ghost', 'lego', 'talk']
-
+FRAME_BATCH = 8  # frames accumulated per recon_model forward pass; tune to GPU memory
 
 def build_args(device='cuda'):
     """Build a minimal args namespace that face_model and face_box expect."""
@@ -90,9 +90,8 @@ def main():
     args   = build_args(device)
 
     # ── load models (once) ──────────────────────────────────────────────────
-    recon_model       = face_model(args)
-    facebox_detector  = face_box(args).detector
-    # tri is constant across all frames
+    recon_model      = face_model(args)
+    facebox_detector = face_box(args).detector
 
     for sid_path in sid_paths:
         session_id = Path(sid_path).stem
@@ -101,68 +100,96 @@ def main():
             print(f'[3DDFA] {activity} — {session_id}')
             vid_paths = glob.glob(os.path.join(sid_path, activity) + '/*')
             vid_paths = [v for v in vid_paths if not ('E1.mp4' in v or 'E2.mp4' in v)]
-            # vid_paths = [v for v in vid_paths if any(c in Path(v).stem for c in ('FC1', 'FC2', 'Z1', 'Z2'))]
 
             for vid_path in vid_paths:
                 video_name = Path(vid_path).stem
 
                 cap = cv.VideoCapture(vid_path)
                 total_frames = int(cap.get(cv.CAP_PROP_FRAME_COUNT))
-                total_frames = 5
+                # total_frames = 25
 
                 curr_out_path = os.path.join(out_path, f'{session_id}/{activity}')
                 os.makedirs(curr_out_path, exist_ok=True)
                 out_pkl = os.path.join(curr_out_path, f'{video_name}_3ddfa.pkl')
 
-                frame_results = {}
+                frame_results  = {}
+                samples        = []  # im_tensor (1, 3, 224, 224) per face
+                sample_fidx    = []  # original frame index per sample
+                sample_pid     = []  # person id per sample
+                sample_trans   = []  # trans_params per sample
+                frames_seen    = 0
+
+                def flush():
+                    if not samples:
+                        return
+
+                    # ── single recon_model forward pass for all accumulated faces ──
+                    batch_tensor = torch.cat(samples, dim=0).to(args.device)  # (N, 3, 224, 224)
+                    recon_model.input_img = batch_tensor
+                    with torch.no_grad():
+                        results = recon_model.forward()
+
+                    tri = results['tri']  # constant (70789, 3)
+
+                    for n in range(len(samples)):
+                        fidx        = sample_fidx[n]
+                        pid         = sample_pid[n]
+                        trans_params = sample_trans[n]
+
+                        ldm68  = back_resize_pts(results['ldm68'][n],  trans_params)
+                        ldm106 = back_resize_pts(results['ldm106'][n], trans_params)
+                        v2d    = back_resize_pts(results['v2d'][n],    trans_params)
+                        v3d    = results['v3d'][n]
+
+                        if fidx not in frame_results:
+                            frame_results[fidx] = {}
+                        frame_results[fidx][pid] = {
+                            'ldm68':  ldm68.astype(np.float32),
+                            'ldm106': ldm106.astype(np.float32),
+                            'v2d':    v2d.astype(np.float32),
+                            'v3d':    v3d.astype(np.float32),
+                            'tri':    tri,
+                        }
+
+                    samples.clear()
+                    sample_fidx.clear()
+                    sample_pid.clear()
+                    sample_trans.clear()
+
                 for fidx in trange(total_frames, desc=video_name):
                     ret, frame_bgr = cap.read()
                     if not ret:
                         break
                     frame_bgr = cv.resize(frame_bgr, (1280, 720))
-
-                    # 3DDFA expects a PIL RGB image
                     frame_pil = Image.fromarray(cv.cvtColor(frame_bgr, cv.COLOR_BGR2RGB))
 
                     try:
                         trans_results, im_results = facebox_detector(frame_pil)
                     except Exception as e:
-                        # No face detected or detection error
                         print(f'  Frame {fidx}: face detection failed — {e}')
+                        frames_seen += 1
+                        if frames_seen % FRAME_BATCH == 0:
+                            flush()
                         continue
                     if trans_results is None:
+                        frames_seen += 1
+                        if frames_seen % FRAME_BATCH == 0:
+                            flush()
                         continue
-                    person_results_all = {}
+
                     for pid in trans_results.keys():
-                      trans_params = trans_results[pid]
-                      im_tensor = im_results[pid]
+                        samples.append(im_results[pid])
+                        sample_fidx.append(fidx)
+                        sample_pid.append(pid)
+                        sample_trans.append(trans_results[pid])
 
-                      recon_model.input_img = im_tensor.to(args.device)
-                      results = recon_model.forward()
-                      # for k, v in results.items():
-                      #   print(f"{k} : {v.shape}")
+                    frames_seen += 1
+                    if frames_seen % FRAME_BATCH == 0:
+                        flush()
 
-                      # ── landmarks: map 224×224 crop → original image space ──
-                      ldm68  = back_resize_pts(results['ldm68'].squeeze(0),  trans_params)  # (68, 2)
-                      ldm106 = back_resize_pts(results['ldm106'].squeeze(0), trans_params)  # (106, 2)
-
-                      # v2d is also in 224×224 crop space
-                      v2d_crop = results['v2d'].squeeze(0)  # (35709, 2)
-                      v2d      = back_resize_pts(v2d_crop, trans_params)      # (35709, 2)
-
-                      v3d = results['v3d'].squeeze(0)  # (35709, 3)
-                      tri = results['tri']             # (70789, 3) — constant
-
-                      person_results_all[pid] = {
-                          'ldm68':  ldm68.astype(np.float32),
-                          'ldm106': ldm106.astype(np.float32),
-                          'v2d':    v2d.astype(np.float32),
-                          'v3d':    v3d.astype(np.float32),
-                      }
-                    frame_results[fidx] = person_results_all
+                flush()  # process any remaining samples
 
                 cap.release()
-
 
                 with open(out_pkl, 'wb') as f:
                     pickle.dump(frame_results, f)
