@@ -45,8 +45,7 @@ cam_map = {
 }
 
 activities = ['animals', 'gaze', 'ghost', 'lego', 'talk']
-
-
+activities = ['lego']
 def build_args(device='cuda'):
     """Build a minimal args namespace that face_model and face_box expect."""
     parser = argparse.ArgumentParser()
@@ -96,21 +95,19 @@ def main():
 
     for sid_path in sid_paths:
         session_id = Path(sid_path).stem
+        if '005013' not in session_id: continue
 
         for activity in activities:
             print(f'[3DDFA] {activity} — {session_id}')
             vid_paths = glob.glob(os.path.join(sid_path, activity) + '/*')
             vid_paths = [v for v in vid_paths if not ('E1.mp4' in v or 'E2.mp4' in v)]
-            # vid_paths = [v for v in vid_paths if any(c in Path(v).stem for c in ('FC1', 'FC2', 'Z1', 'Z2'))]
-
             for vid_path in vid_paths:
                 video_name = Path(vid_path).stem
 
                 cap = cv.VideoCapture(vid_path)
                 total_frames = int(cap.get(cv.CAP_PROP_FRAME_COUNT))
-                total_frames = 5
 
-                curr_out_path = os.path.join(out_path, f'{session_id}/{activity}')
+                curr_out_path = os.path.join(out_path, session_id, activity)
                 os.makedirs(curr_out_path, exist_ok=True)
                 out_pkl = os.path.join(curr_out_path, f'{video_name}_3ddfa.pkl')
 
@@ -139,8 +136,6 @@ def main():
 
                       recon_model.input_img = im_tensor.to(args.device)
                       results = recon_model.forward()
-                      # for k, v in results.items():
-                      #   print(f"{k} : {v.shape}")
 
                       # ── landmarks: map 224×224 crop → original image space ──
                       ldm68  = back_resize_pts(results['ldm68'].squeeze(0),  trans_params)  # (68, 2)
@@ -162,8 +157,6 @@ def main():
                     frame_results[fidx] = person_results_all
 
                 cap.release()
-
-
                 with open(out_pkl, 'wb') as f:
                     pickle.dump(frame_results, f)
                 print(f'  Saved {len(frame_results)} face detections → {out_pkl}')
