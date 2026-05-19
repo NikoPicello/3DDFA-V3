@@ -45,12 +45,8 @@ cam_map = {
 }
 
 activities = ['animals', 'gaze', 'ghost', 'lego', 'talk']
-<<<<<<< HEAD
 FRAME_BATCH = 8  # frames accumulated per recon_model forward pass; tune to GPU memory
 
-=======
-activities = ['lego']
->>>>>>> 576581691ad1dda9a4a2c45cbc2b6774e66081a6
 def build_args(device='cuda'):
     """Build a minimal args namespace that face_model and face_box expect."""
     parser = argparse.ArgumentParser()
@@ -105,19 +101,13 @@ def main():
             print(f'[3DDFA] {activity} — {session_id}')
             vid_paths = glob.glob(os.path.join(sid_path, activity) + '/*')
             vid_paths = [v for v in vid_paths if not ('E1.mp4' in v or 'E2.mp4' in v)]
-<<<<<<< HEAD
 
-=======
->>>>>>> 576581691ad1dda9a4a2c45cbc2b6774e66081a6
             for vid_path in vid_paths:
                 video_name = Path(vid_path).stem
 
                 cap = cv.VideoCapture(vid_path)
                 total_frames = int(cap.get(cv.CAP_PROP_FRAME_COUNT))
-<<<<<<< HEAD
                 # total_frames = 25
-=======
->>>>>>> 576581691ad1dda9a4a2c45cbc2b6774e66081a6
 
                 curr_out_path = os.path.join(out_path, session_id, activity)
                 os.makedirs(curr_out_path, exist_ok=True)
@@ -143,8 +133,8 @@ def main():
                     tri = results['tri']  # constant (70789, 3)
 
                     for n in range(len(samples)):
-                        fidx        = sample_fidx[n]
-                        pid         = sample_pid[n]
+                        fidx         = sample_fidx[n]
+                        pid          = sample_pid[n]
                         trans_params = sample_trans[n]
 
                         ldm68  = back_resize_pts(results['ldm68'][n],  trans_params)
@@ -194,22 +184,14 @@ def main():
                         sample_pid.append(pid)
                         sample_trans.append(trans_results[pid])
 
-<<<<<<< HEAD
                     frames_seen += 1
                     if frames_seen % FRAME_BATCH == 0:
                         flush()
-=======
-                      recon_model.input_img = im_tensor.to(args.device)
-                      results = recon_model.forward()
->>>>>>> 576581691ad1dda9a4a2c45cbc2b6774e66081a6
 
                 flush()  # process any remaining samples
 
                 cap.release()
-<<<<<<< HEAD
 
-=======
->>>>>>> 576581691ad1dda9a4a2c45cbc2b6774e66081a6
                 with open(out_pkl, 'wb') as f:
                     pickle.dump(frame_results, f)
                 print(f'  Saved {len(frame_results)} face detections → {out_pkl}')
