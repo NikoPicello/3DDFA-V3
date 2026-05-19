@@ -91,7 +91,8 @@ def main():
 
     # ── load models (once) ──────────────────────────────────────────────────
     recon_model      = face_model(args)
-    facebox_detector = face_box(args).detector
+    fb               = face_box(args)
+    facebox_detector = fb.detector_batch
 
     for sid_path in sid_paths:
         session_id = Path(sid_path).stem
@@ -113,82 +114,73 @@ def main():
                 os.makedirs(curr_out_path, exist_ok=True)
                 out_pkl = os.path.join(curr_out_path, f'{video_name}_3ddfa.pkl')
 
-                frame_results  = {}
-                samples        = []  # im_tensor (1, 3, 224, 224) per face
-                sample_fidx    = []  # original frame index per sample
-                sample_pid     = []  # person id per sample
-                sample_trans   = []  # trans_params per sample
-                frames_seen    = 0
+                frame_results = {}
+                frames_buf    = []  # PIL images
+                fidxs_buf     = []  # original frame indices
 
                 def flush():
-                    if not samples:
+                    if not frames_buf:
                         return
 
-                    # ── single recon_model forward pass for all accumulated faces ──
-                    batch_tensor = torch.cat(samples, dim=0).to(args.device)  # (N, 3, 224, 224)
-                    recon_model.input_img = batch_tensor
-                    with torch.no_grad():
-                        results = recon_model.forward()
+                    # ── batch face detection across all buffered frames ───────
+                    det_results = facebox_detector(frames_buf)
 
-                    tri = results['tri']  # constant (70789, 3)
+                    # collect face crops from all frames into one sample list
+                    samples      = []
+                    sample_fidx  = []
+                    sample_pid   = []
+                    sample_trans = []
+                    for fidx, (trans_results, im_results) in zip(fidxs_buf, det_results):
+                        if trans_results is None:
+                            continue
+                        for pid in trans_results.keys():
+                            samples.append(im_results[pid])
+                            sample_fidx.append(fidx)
+                            sample_pid.append(pid)
+                            sample_trans.append(trans_results[pid])
 
-                    for n in range(len(samples)):
-                        fidx         = sample_fidx[n]
-                        pid          = sample_pid[n]
-                        trans_params = sample_trans[n]
+                    if samples:
+                        # ── single recon_model forward pass for all faces ─────
+                        batch_tensor = torch.cat(samples, dim=0).to(args.device)
+                        recon_model.input_img = batch_tensor
+                        with torch.no_grad():
+                            results = recon_model.forward()
 
-                        ldm68  = back_resize_pts(results['ldm68'][n],  trans_params)
-                        ldm106 = back_resize_pts(results['ldm106'][n], trans_params)
-                        v2d    = back_resize_pts(results['v2d'][n],    trans_params)
-                        v3d    = results['v3d'][n]
+                        tri = results['tri']
+                        for n in range(len(samples)):
+                            fidx         = sample_fidx[n]
+                            pid          = sample_pid[n]
+                            trans_params = sample_trans[n]
 
-                        if fidx not in frame_results:
-                            frame_results[fidx] = {}
-                        frame_results[fidx][pid] = {
-                            'ldm68':  ldm68.astype(np.float32),
-                            'ldm106': ldm106.astype(np.float32),
-                            'v2d':    v2d.astype(np.float32),
-                            'v3d':    v3d.astype(np.float32),
-                            'tri':    tri,
-                        }
+                            ldm68  = back_resize_pts(results['ldm68'][n],  trans_params)
+                            ldm106 = back_resize_pts(results['ldm106'][n], trans_params)
+                            v2d    = back_resize_pts(results['v2d'][n],    trans_params)
+                            v3d    = results['v3d'][n]
 
-                    samples.clear()
-                    sample_fidx.clear()
-                    sample_pid.clear()
-                    sample_trans.clear()
+                            if fidx not in frame_results:
+                                frame_results[fidx] = {}
+                            frame_results[fidx][pid] = {
+                                'ldm68':  ldm68.astype(np.float32),
+                                'ldm106': ldm106.astype(np.float32),
+                                'v2d':    v2d.astype(np.float32),
+                                'v3d':    v3d.astype(np.float32),
+                                'tri':    tri,
+                            }
+
+                    frames_buf.clear()
+                    fidxs_buf.clear()
 
                 for fidx in trange(total_frames, desc=video_name):
                     ret, frame_bgr = cap.read()
                     if not ret:
                         break
                     frame_bgr = cv.resize(frame_bgr, (1280, 720))
-                    frame_pil = Image.fromarray(cv.cvtColor(frame_bgr, cv.COLOR_BGR2RGB))
-
-                    try:
-                        trans_results, im_results = facebox_detector(frame_pil)
-                    except Exception as e:
-                        print(f'  Frame {fidx}: face detection failed — {e}')
-                        frames_seen += 1
-                        if frames_seen % FRAME_BATCH == 0:
-                            flush()
-                        continue
-                    if trans_results is None:
-                        frames_seen += 1
-                        if frames_seen % FRAME_BATCH == 0:
-                            flush()
-                        continue
-
-                    for pid in trans_results.keys():
-                        samples.append(im_results[pid])
-                        sample_fidx.append(fidx)
-                        sample_pid.append(pid)
-                        sample_trans.append(trans_results[pid])
-
-                    frames_seen += 1
-                    if frames_seen % FRAME_BATCH == 0:
+                    frames_buf.append(Image.fromarray(cv.cvtColor(frame_bgr, cv.COLOR_BGR2RGB)))
+                    fidxs_buf.append(fidx)
+                    if len(frames_buf) == FRAME_BATCH:
                         flush()
 
-                flush()  # process any remaining samples
+                flush()  # process any remaining frames
 
                 cap.release()
 

@@ -145,3 +145,82 @@ class Model:
                 }]
 
             return annotations
+
+    def predict_jsons_batch(
+            self,
+            images: list,
+            confidence_threshold: float = 0.7,
+            nms_threshold: float = 0.4) -> list:
+        """Run RetinaFace on a list of RGB numpy arrays; return per-image annotation lists."""
+        with torch.no_grad():
+            scale_landmarks = torch.from_numpy(
+                np.tile([self.max_size, self.max_size], 5)).to(self.device).float()
+            scale_bboxes = torch.from_numpy(
+                np.tile([self.max_size, self.max_size], 2)).to(self.device).float()
+
+            original_sizes, pads_list, tensors = [], [], []
+            for image in images:
+                oh, ow = image.shape[:2]
+                original_sizes.append((oh, ow))
+                transformed = self.transform(image=image)['image']
+                paded = pad_to_size(target_size=(self.max_size, self.max_size), image=transformed)
+                pads_list.append(paded['pads'])
+                tensors.append(tensor_from_rgb_image(paded['image']))
+
+            batch = torch.stack(tensors).to(self.device)
+            loc, conf, land = self.model(batch)
+            conf = F.softmax(conf, dim=-1)
+
+        results_per_image = []
+        for i, (oh, ow) in enumerate(original_sizes):
+            boxes = decode(loc.data[i], self.prior_box, self.variance)
+            boxes *= scale_bboxes
+            scores = conf[i][:, 1]
+            landmarks = decode_landm(land.data[i], self.prior_box, self.variance)
+            landmarks *= scale_landmarks
+
+            valid = scores > confidence_threshold
+            boxes, landmarks, scores = boxes[valid], landmarks[valid], scores[valid]
+
+            order = scores.argsort(descending=True)
+            boxes, landmarks, scores = boxes[order], landmarks[order], scores[order]
+
+            keep = nms(boxes, scores, nms_threshold)
+            boxes = boxes[keep, :].int()
+
+            if boxes.shape[0] == 0:
+                results_per_image.append([{'bbox': [], 'score': -1, 'landmarks': []}])
+                continue
+
+            landmarks = landmarks[keep]
+            scores    = scores[keep].cpu().numpy().astype(np.float64)
+            boxes     = boxes.cpu().numpy()
+            landmarks = landmarks.cpu().numpy().reshape([-1, 2])
+
+            unpadded = unpad_from_size(pads_list[i], bboxes=boxes, keypoints=landmarks)
+            resize_coeff = max(oh, ow) / self.max_size
+            boxes     = (unpadded['bboxes'] * resize_coeff).astype(int)
+            landmarks = (unpadded['keypoints'].reshape(-1, 10) * resize_coeff).astype(int)
+
+            annotations = []
+            for box_id, bbox in enumerate(boxes):
+                x_min, y_min, x_max, y_max = bbox
+                x_min = np.clip(x_min, 0, ow - 1)
+                x_max = np.clip(x_max, x_min + 1, ow - 1)
+                if x_min >= x_max:
+                    continue
+                y_min = np.clip(y_min, 0, oh - 1)
+                y_max = np.clip(y_max, y_min + 1, oh - 1)
+                if y_min >= y_max:
+                    continue
+                annotations.append({
+                    'bbox':      bbox.tolist(),
+                    'score':     scores[box_id],
+                    'landmarks': landmarks[box_id].reshape(-1, 2).tolist(),
+                })
+
+            results_per_image.append(
+                annotations if annotations else [{'bbox': [], 'score': -1, 'landmarks': []}]
+            )
+
+        return results_per_image

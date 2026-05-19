@@ -78,6 +78,22 @@ class LargeBaseLmkInfer:
         return smooth_lmks
 
     @staticmethod
-    def infer_img(img, model,use_gpu=True):
-        lmks = LargeBaseLmkInfer.process_img(model, img,use_gpu)
+    def infer_img(img, model, use_gpu=True):
+        lmks = LargeBaseLmkInfer.process_img(model, img, use_gpu)
         return lmks
+
+    @staticmethod
+    def process_imgs_batch(model, images, use_gpu=True):
+        """Process a list of (224, 224, 3) uint8 RGB crops as a single batch.
+        Returns (N, 212) numpy array of raw landmark coordinates.
+        """
+        imgs = []
+        for image in images:
+            img = (image.astype(np.float32) - np.array([103.94, 116.78, 123.68], dtype=np.float32)) / 255.0
+            imgs.append(torch.from_numpy(img.transpose([2, 0, 1])))
+        img_in = torch.stack(imgs)  # (N, 3, 224, 224)
+        if use_gpu:
+            img_in = img_in.cuda()
+        with torch.no_grad():
+            output = model(img_in) * INPUT_SIZE
+        return output.cpu().numpy() if use_gpu else output.numpy()

@@ -70,6 +70,52 @@ def enlarged_bbox(bbox, img_width, img_height, enlarge_ratio=0.2):
     return bbox
 
 
+def _extract_square_crop(rgb_image, cx, cy, sz):
+    """Extract a square crop centred at (cx, cy) with side sz; resize to INPUT_SIZE.
+    Returns (crop, trans_x1, trans_y1, sz).
+    """
+    H, W = rgb_image.shape[:2]
+    x1 = cx - sz / 2;  y1 = cy - sz / 2
+    trans_x1, trans_y1 = x1, y1
+    x2 = x1 + sz;      y2 = y1 + sz
+    dx  = max(0, -x1);  x1 = max(0, x1)
+    dy  = max(0, -y1);  y1 = max(0, y1)
+    edx = max(0, x2 - W);  x2 = min(W, x2)
+    edy = max(0, y2 - H);  y2 = min(H, y2)
+    crop = rgb_image[int(y1):int(y2), int(x1):int(x2)]
+    if dx > 0 or dy > 0 or edx > 0 or edy > 0:
+        crop = cv2.copyMakeBorder(crop, int(dy), int(edy), int(dx), int(edx),
+                                  cv2.BORDER_CONSTANT, value=(103.94, 116.78, 123.68))
+    return cv2.resize(crop, (INPUT_SIZE, INPUT_SIZE)), trans_x1, trans_y1, sz
+
+
+def _box_to_crop(rgb_image, x1_det, y1_det, x2_det, y2_det):
+    """First-pass crop from a RetinaFace bounding box."""
+    cx = (x1_det + x2_det) / 2
+    cy = (y1_det + y2_det) / 2
+    sz = max(x2_det - x1_det + 1, y2_det - y1_det + 1) * ENLARGE_RATIO
+    return _extract_square_crop(rgb_image, cx, cy, sz)
+
+
+def _landmarks_to_crop(rgb_image, affine_lmks):
+    """Second-pass crop centred on the bounding box of first-pass landmarks."""
+    x1, y1 = np.min(affine_lmks[:, 0]), np.min(affine_lmks[:, 1])
+    x2, y2 = np.max(affine_lmks[:, 0]), np.max(affine_lmks[:, 1])
+    cx = (x1 + x2) / 2;  cy = (y1 + y2) / 2
+    sz = max(x2 - x1 + 1, y2 - y1 + 1) * ENLARGE_RATIO
+    return _extract_square_crop(rgb_image, cx, cy, sz)
+
+
+def _map_to_image(raw_flat, trans_x1, trans_y1, sz):
+    """Map flat 212-element landmark output to (106, 2) image-space coordinates."""
+    inv_scale = sz / INPUT_SIZE
+    affine = np.zeros((106, 2))
+    for idx in range(106):
+        affine[idx, 0] = raw_flat[idx * 2]     * inv_scale + trans_x1
+        affine[idx, 1] = raw_flat[idx * 2 + 1] * inv_scale + trans_y1
+    return affine
+
+
 class FaceInfo:
     def __init__(self):
         self.rect = np.asarray([0, 0, 0, 0])
@@ -94,120 +140,72 @@ class LargeModelInfer:
 
         
     def infer(self, img_bgr):
-        landmarks = []
-
-        # rgb_image = img_bgr[:,:,::-1]
         rgb_image = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-        # boxes = self.detector.predict(rgb_image)
-        results = self.detector.predict_jsons(rgb_image)
-        # result_img = detector.draw(rgb_image, detect_results)
-        # cv2.imshow("detect result", result_img[...,::-1].astype(np.uint8))
+        results   = self.detector.predict_jsons(rgb_image)
+        boxes = [{'x1': a['bbox'][0], 'y1': a['bbox'][1], 'x2': a['bbox'][2], 'y2': a['bbox'][3]}
+                 for a in results if a['score'] != -1]
+        if not boxes:
+            return boxes, []
 
-        boxes = []
-        for anno in results:
-            if anno['score'] == -1:
-                break
-            boxes.append({'x1': anno['bbox'][0], 'y1': anno['bbox'][1], 'x2': anno['bbox'][2], 'y2': anno['bbox'][3]})
+        use_gpu = self.device.lower() == 'cuda'
 
-        for detect_result in boxes:
-            x1 = detect_result["x1"]
-            y1 = detect_result["y1"]
-            x2 = detect_result["x2"]
-            y2 = detect_result["y2"]
+        # Pass 1: all face crops in one batch
+        crops1  = [_box_to_crop(rgb_image, b['x1'], b['y1'], b['x2'], b['y2']) for b in boxes]
+        lmks1   = LargeBaseLmkInfer.process_imgs_batch(
+            self.large_base_lmks_model, [c[0] for c in crops1], use_gpu)
+        affine1 = [_map_to_image(lmks1[n], crops1[n][1], crops1[n][2], crops1[n][3])
+                   for n in range(len(boxes))]
 
-            w = x2 - x1 + 1
-            h = y2 - y1 + 1
-
-            cx = (x2 + x1) / 2
-            cy = (y2 + y1) / 2
-
-            sz = max(h, w) * ENLARGE_RATIO
-
-            x1 = cx - sz / 2
-            y1 = cy - sz / 2
-            trans_x1 = x1
-            trans_y1 = y1
-            x2 = x1 + sz
-            y2 = y1 + sz
-
-            height, width, _ = rgb_image.shape
-            dx = max(0, -x1)
-            dy = max(0, -y1)
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-
-            edx = max(0, x2 - width)
-            edy = max(0, y2 - height)
-            x2 = min(width, x2)
-            y2 = min(height, y2)
-
-            crop_img = rgb_image[int(y1):int(y2), int(x1):int(x2)]
-            if dx > 0 or dy > 0 or edx > 0 or edy > 0:
-                crop_img = cv2.copyMakeBorder(crop_img, int(dy), int(edy), int(dx), int(edx), cv2.BORDER_CONSTANT, value=(103.94, 116.78, 123.68))
-            crop_img = cv2.resize(crop_img, (INPUT_SIZE, INPUT_SIZE))
-            # cv2.imshow("crop resize", crop_img.astype(np.uint8))
-            # cv2.waitKey()
-
-            base_lmks = LargeBaseLmkInfer.infer_img(crop_img, self.large_base_lmks_model, self.device=="cuda")
-
-            inv_scale = sz / INPUT_SIZE
-
-            affine_base_lmks = np.zeros((106, 2))
-            for idx in range(106):
-                affine_base_lmks[idx][0] = base_lmks[0][idx * 2 + 0] * inv_scale + trans_x1
-                affine_base_lmks[idx][1] = base_lmks[0][idx * 2 + 1] * inv_scale + trans_y1
-
-            x1 = np.min(affine_base_lmks[:, 0])
-            y1 = np.min(affine_base_lmks[:, 1])
-            x2 = np.max(affine_base_lmks[:, 0])
-            y2 = np.max(affine_base_lmks[:, 1])
-
-            w = x2 - x1 + 1
-            h = y2 - y1 + 1
-
-            cx = (x2 + x1) / 2
-            cy = (y2 + y1) / 2
-
-            sz = max(h, w) * ENLARGE_RATIO
-
-            x1 = cx - sz / 2
-            y1 = cy - sz / 2
-            trans_x1 = x1
-            trans_y1 = y1
-            x2 = x1 + sz
-            y2 = y1 + sz
-
-            height, width, _ = rgb_image.shape
-            dx = max(0, -x1)
-            dy = max(0, -y1)
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-
-            edx = max(0, x2 - width)
-            edy = max(0, y2 - height)
-            x2 = min(width, x2)
-            y2 = min(height, y2)
-
-            crop_img = rgb_image[int(y1):int(y2), int(x1):int(x2)]
-            if dx > 0 or dy > 0 or edx > 0 or edy > 0:
-                crop_img = cv2.copyMakeBorder(crop_img, int(dy), int(edy), int(dx), int(edx), cv2.BORDER_CONSTANT,
-                                              value=(103.94, 116.78, 123.68))
-            crop_img = cv2.resize(crop_img, (INPUT_SIZE, INPUT_SIZE))
-            # cv2.imshow("crop resize", crop_img.astype(np.uint8))
-            # cv2.waitKey()
-
-            base_lmks = LargeBaseLmkInfer.infer_img(crop_img, self.large_base_lmks_model, self.device.lower()=="cuda")
-
-            inv_scale = sz / INPUT_SIZE
-
-            affine_base_lmks = np.zeros((106, 2))
-            for idx in range(106):
-                affine_base_lmks[idx][0] = base_lmks[0][idx * 2 + 0] * inv_scale + trans_x1
-                affine_base_lmks[idx][1] = base_lmks[0][idx * 2 + 1] * inv_scale + trans_y1
-
-            landmarks.append(affine_base_lmks)
+        # Pass 2: refined crops in one batch
+        crops2     = [_landmarks_to_crop(rgb_image, aff) for aff in affine1]
+        lmks2      = LargeBaseLmkInfer.process_imgs_batch(
+            self.large_base_lmks_model, [c[0] for c in crops2], use_gpu)
+        landmarks  = [_map_to_image(lmks2[n], crops2[n][1], crops2[n][2], crops2[n][3])
+                      for n in range(len(boxes))]
 
         return boxes, landmarks
+
+    def infer_batch(self, imgs_bgr):
+        """Run detection + 2-pass landmark inference on a list of BGR images.
+        Returns list of (boxes, landmarks) — same per-image format as infer().
+        """
+        rgb_images  = [cv2.cvtColor(img, cv2.COLOR_BGR2RGB) for img in imgs_bgr]
+        all_results = self.detector.predict_jsons_batch(rgb_images)
+        img_boxes   = [
+            [{'x1': a['bbox'][0], 'y1': a['bbox'][1], 'x2': a['bbox'][2], 'y2': a['bbox'][3]}
+             for a in res if a['score'] != -1]
+            for res in all_results
+        ]
+
+        # Collect all pass-1 crops across every image
+        crops1, crop_origin = [], []
+        for img_idx, (rgb, boxes) in enumerate(zip(rgb_images, img_boxes)):
+            for box_idx, b in enumerate(boxes):
+                crops1.append(_box_to_crop(rgb, b['x1'], b['y1'], b['x2'], b['y2']))
+                crop_origin.append((img_idx, box_idx))
+
+        if not crops1:
+            return [([], []) for _ in imgs_bgr]
+
+        use_gpu = self.device.lower() == 'cuda'
+        lmks1   = LargeBaseLmkInfer.process_imgs_batch(
+            self.large_base_lmks_model, [c[0] for c in crops1], use_gpu)
+        affine1 = [_map_to_image(lmks1[n], crops1[n][1], crops1[n][2], crops1[n][3])
+                   for n in range(len(crops1))]
+
+        # Collect all pass-2 crops
+        crops2 = [_landmarks_to_crop(rgb_images[img_idx], affine1[n])
+                  for n, (img_idx, _) in enumerate(crop_origin)]
+        lmks2  = LargeBaseLmkInfer.process_imgs_batch(
+            self.large_base_lmks_model, [c[0] for c in crops2], use_gpu)
+
+        # Reconstruct per-image landmarks
+        out_lmks = [[] for _ in imgs_bgr]
+        for n, (img_idx, _) in enumerate(crop_origin):
+            out_lmks[img_idx].append(
+                _map_to_image(lmks2[n], crops2[n][1], crops2[n][2], crops2[n][3]))
+
+        return [(img_boxes[i], out_lmks[i]) for i in range(len(imgs_bgr))]
 
 
 
