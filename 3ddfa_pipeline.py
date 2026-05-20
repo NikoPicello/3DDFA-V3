@@ -21,6 +21,7 @@ import sys
 import glob
 import pickle
 import argparse
+import time
 from pathlib import Path
 
 import cv2 as cv
@@ -118,12 +119,17 @@ def main():
                 frames_buf    = []  # PIL images
                 fidxs_buf     = []  # original frame indices
 
+                t_read = t_detect = t_recon = t_postproc = 0.0
+
                 def flush():
+                    nonlocal t_detect, t_recon, t_postproc
                     if not frames_buf:
                         return
 
                     # ── batch face detection across all buffered frames ───────
+                    _t0 = time.perf_counter()
                     det_results = facebox_detector(frames_buf)
+                    t_detect += time.perf_counter() - _t0
 
                     # collect face crops from all frames into one sample list
                     samples      = []
@@ -141,11 +147,14 @@ def main():
 
                     if samples:
                         # ── single recon_model forward pass for all faces ─────
+                        _t0 = time.perf_counter()
                         batch_tensor = torch.cat(samples, dim=0).to(args.device)
                         recon_model.input_img = batch_tensor
                         with torch.no_grad():
                             results = recon_model.forward()
+                        t_recon += time.perf_counter() - _t0
 
+                        _t0 = time.perf_counter()
                         tri = results['tri']
                         for n in range(len(samples)):
                             fidx         = sample_fidx[n]
@@ -166,21 +175,47 @@ def main():
                                 'v3d':    v3d.astype(np.float32),
                                 'tri':    tri,
                             }
+                        t_postproc += time.perf_counter() - _t0
 
                     frames_buf.clear()
                     fidxs_buf.clear()
 
+                def log_timing(n_frames):
+                    elapsed = time.perf_counter() - t_video_start
+                    t_other = elapsed - t_read - t_detect - t_recon - t_postproc
+                    print(f'  [{n_frames} frames | {elapsed:.1f}s elapsed]'
+                          f'  read {t_read:.1f}s ({100*t_read/elapsed:.0f}%)'
+                          f'  detect {t_detect:.1f}s ({100*t_detect/elapsed:.0f}%)'
+                          f'  recon {t_recon:.1f}s ({100*t_recon/elapsed:.0f}%)'
+                          f'  post {t_postproc:.1f}s ({100*t_postproc/elapsed:.0f}%)'
+                          f'  other {t_other:.1f}s ({100*t_other/elapsed:.0f}%)')
+
+                t_video_start = time.perf_counter()
                 for fidx in trange(total_frames, desc=video_name):
+                    _t0 = time.perf_counter()
                     ret, frame_bgr = cap.read()
                     if not ret:
                         break
                     frame_bgr = cv.resize(frame_bgr, (1280, 720))
                     frames_buf.append(Image.fromarray(cv.cvtColor(frame_bgr, cv.COLOR_BGR2RGB)))
                     fidxs_buf.append(fidx)
+                    t_read += time.perf_counter() - _t0
                     if len(frames_buf) == FRAME_BATCH:
                         flush()
+                    if (fidx + 1) % 500 == 0:
+                        log_timing(fidx + 1)
 
                 flush()  # process any remaining frames
+                t_video_total = time.perf_counter() - t_video_start
+
+                t_other = t_video_total - t_read - t_detect - t_recon - t_postproc
+                n_frames = fidx + 1 if 'fidx' in dir() else total_frames
+                print(f'  Timing over {n_frames} frames (total {t_video_total:.1f}s):')
+                print(f'    read/decode : {t_read:.2f}s  ({100*t_read/t_video_total:.1f}%)')
+                print(f'    face detect : {t_detect:.2f}s  ({100*t_detect/t_video_total:.1f}%)')
+                print(f'    recon fwd   : {t_recon:.2f}s  ({100*t_recon/t_video_total:.1f}%)')
+                print(f'    post-proc   : {t_postproc:.2f}s  ({100*t_postproc/t_video_total:.1f}%)')
+                print(f'    other       : {t_other:.2f}s  ({100*t_other/t_video_total:.1f}%)')
 
                 cap.release()
 
