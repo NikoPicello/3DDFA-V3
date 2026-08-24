@@ -81,6 +81,11 @@ def back_resize_pts(pts, trans_params):
 
 
 def main():
+    cli_parser = argparse.ArgumentParser()
+    cli_parser.add_argument('--sid', type=str, default=None,
+                             help="Specify a session to process")
+    cli_args = cli_parser.parse_args()
+
     main_path     = '/'.join(sys.path[0].split('/')[:-2]) + '/'
     resources_path = os.path.join(main_path, 'resources')
     sessions_path  = os.path.join(resources_path, 'sessions')
@@ -97,7 +102,7 @@ def main():
 
     for sid_path in sid_paths:
         session_id = Path(sid_path).stem
-        if '005013' not in session_id: continue
+        if cli_args.sid is not None and cli_args.sid not in session_id: continue
 
         for activity in activities:
             print(f'[3DDFA] {activity} — {session_id}')
@@ -109,7 +114,6 @@ def main():
 
                 cap = cv.VideoCapture(vid_path)
                 total_frames = int(cap.get(cv.CAP_PROP_FRAME_COUNT))
-                # total_frames = 25
 
                 curr_out_path = os.path.join(out_path, session_id, activity)
                 os.makedirs(curr_out_path, exist_ok=True)
@@ -196,7 +200,7 @@ def main():
                     ret, frame_bgr = cap.read()
                     if not ret:
                         break
-                    frame_bgr = cv.resize(frame_bgr, (1280, 720))
+                    # frame_bgr = cv.resize(frame_bgr, (1280, 720))
                     frames_buf.append(Image.fromarray(cv.cvtColor(frame_bgr, cv.COLOR_BGR2RGB)))
                     fidxs_buf.append(fidx)
                     t_read += time.perf_counter() - _t0
