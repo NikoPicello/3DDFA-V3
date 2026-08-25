@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
 """Run 3ddfa_pipeline.py across many sessions, one per truly-idle GPU.
 
-Same job as mamma's run_parallel_sessions.py / WiLoR's run_parallel_sessions.py
-(copy a candidate session in, run it pinned to one GPU, clean up on success).
-3ddfa_pipeline.py previously had no session-selecting CLI flag at all -- it
-hardcoded `if '005013' not in session_id: continue` as a debug leftover -- so
-a `--sid` flag (substring match against the session id, mirroring WiLoR's own
-`--sid`) was added there to make per-session parallel runs possible.
-
 Run this from inside the container, from the already-activated 3DDFA-V3 conda
 env (e.g. `python run_parallel_sessions.py ...`) -- each per-session
 subprocess is launched with the same interpreter (sys.executable), not a

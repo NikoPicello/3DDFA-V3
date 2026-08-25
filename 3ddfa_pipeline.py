@@ -9,8 +9,13 @@ Output format (saved as .pkl per video):
         'ldm106':  np.ndarray (106, 2) — 106 landmarks in original image space,
         'v2d':     np.ndarray (35709, 2) — BFM mesh vertices projected to image space,
         'v3d':     np.ndarray (35709, 3) — BFM mesh vertices in camera space,
-        'tri':     np.ndarray (70789, 3) — triangle faces (shared across frames),
     }
+
+Note: triangle connectivity ('tri') is not included — it's a constant shared by
+every frame/video, defined in assets/face_model.npy, so it isn't duplicated here.
+Mesh rasterization (extractTex=False, seg_visible=False) is also skipped entirely
+in model/recon.py, since neither render_shape/render_face/face_texture nor tri
+are consumed by this pipeline.
 
 Note: landmarks and v2d are mapped back from the internal 224×224 crop to the
 original image pixel coordinates using `back_resize_ldms` from util/preprocess.py.
@@ -159,7 +164,6 @@ def main():
                         t_recon += time.perf_counter() - _t0
 
                         _t0 = time.perf_counter()
-                        tri = results['tri']
                         for n in range(len(samples)):
                             fidx         = sample_fidx[n]
                             pid          = sample_pid[n]
@@ -177,7 +181,6 @@ def main():
                                 'ldm106': ldm106.astype(np.float32),
                                 'v2d':    v2d.astype(np.float32),
                                 'v3d':    v3d.astype(np.float32),
-                                'tri':    tri,
                             }
                         t_postproc += time.perf_counter() - _t0
 

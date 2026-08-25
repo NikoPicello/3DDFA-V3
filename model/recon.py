@@ -468,32 +468,40 @@ class face_model:
         # face vertice in 2d image plane
         v2d = self.to_image(v3d)
 
-        # compute face texture with albedo and lighting
-        face_albedo = self.compute_albedo(alpha_dict['alb'])
-        face_norm = self.compute_norm(face_shape)
-        face_norm_roted = face_norm @ rotation
-        face_texture = self.compute_texture(face_albedo, face_norm_roted, alpha_dict['sh'])
-
-        # render shape with texture
-        _, _, pred_image, visible_idx_renderer = self.renderer(v3d.clone(), self.tri, torch.clamp(face_texture, 0, 1).clone(), visible_vertice = True)
-
-        # render shape
-        gray_shading = self.compute_gray_shading_with_directionlight(torch.ones_like(face_albedo)*0.78,face_norm_roted)
-        mask, _, pred_image_shape, _ = self.renderer(v3d.clone(), self.tri, gray_shading.clone())
-
         result_dict = {
             'v3d': v3d.detach().cpu().numpy(),
             'v2d': v2d.detach().cpu().numpy(),
-            'face_texture': np.clip(face_texture.detach().cpu().numpy(), 0, 1),
-            'tri': self.tri.detach().cpu().numpy(),
-            'uv_coords': self.uv_coords.detach().cpu().numpy(),
-            'render_shape': pred_image_shape.detach().cpu().permute(0, 2, 3, 1).numpy(),
-            'render_face': pred_image.detach().cpu().permute(0, 2, 3, 1).numpy(),
-            'render_mask': mask.detach().cpu().permute(0, 2, 3, 1).numpy(),
         }
 
-        # compute visible vertice according to normal and renderer
-        if self.args.seg_visible or self.args.extractTex:
+        # Rasterizing the mesh (albedo/normal/texture + two renderer passes) is
+        # only needed to produce render_shape/render_face/render_mask/face_texture,
+        # or the visible-vertex mask consumed by seg_visible/extractTex below —
+        # skip it entirely otherwise, since it's the most expensive part of forward().
+        need_render = self.args.seg_visible or self.args.extractTex
+        if need_render:
+            # compute face texture with albedo and lighting
+            face_albedo = self.compute_albedo(alpha_dict['alb'])
+            face_norm = self.compute_norm(face_shape)
+            face_norm_roted = face_norm @ rotation
+            face_texture = self.compute_texture(face_albedo, face_norm_roted, alpha_dict['sh'])
+
+            # render shape with texture
+            _, _, pred_image, visible_idx_renderer = self.renderer(v3d.clone(), self.tri, torch.clamp(face_texture, 0, 1).clone(), visible_vertice = True)
+
+            # render shape
+            gray_shading = self.compute_gray_shading_with_directionlight(torch.ones_like(face_albedo)*0.78,face_norm_roted)
+            mask, _, pred_image_shape, _ = self.renderer(v3d.clone(), self.tri, gray_shading.clone())
+
+            result_dict.update({
+                'face_texture': np.clip(face_texture.detach().cpu().numpy(), 0, 1),
+                'tri': self.tri.detach().cpu().numpy(),
+                'uv_coords': self.uv_coords.detach().cpu().numpy(),
+                'render_shape': pred_image_shape.detach().cpu().permute(0, 2, 3, 1).numpy(),
+                'render_face': pred_image.detach().cpu().permute(0, 2, 3, 1).numpy(),
+                'render_mask': mask.detach().cpu().permute(0, 2, 3, 1).numpy(),
+            })
+
+            # compute visible vertice according to normal and renderer
             visible_idx = torch.zeros(35709).type(torch.int64).to(v3d.device)
             visible_idx[visible_idx_renderer.type(torch.int64)] = 1
             visible_idx[(face_norm_roted[..., 2] < 0)[0]] = 0
