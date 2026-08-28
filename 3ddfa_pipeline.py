@@ -50,26 +50,27 @@ cam_map = {
     'N1': 'HA1', 'N2': 'HA2',
 }
 
-activities = ['animals', 'gaze', 'ghost', 'lego', 'talk']
-FRAME_BATCH = 8  # frames accumulated per recon_model forward pass; tune to GPU memory
-
+FRAME_BATCH = 64  # frames accumulated per recon_model forward pass; tune to GPU memory
 def build_args(device='cuda'):
     """Build a minimal args namespace that face_model and face_box expect."""
     parser = argparse.ArgumentParser()
-    parser.add_argument('--device',      default=device)
-    parser.add_argument('--iscrop',      default=True,         type=lambda x: x.lower() in ['true','1'])
-    parser.add_argument('--detector',    default='retinaface')
-    parser.add_argument('--ldm68',       default=True,         type=lambda x: x.lower() in ['true','1'])
-    parser.add_argument('--ldm106',      default=True,         type=lambda x: x.lower() in ['true','1'])
-    parser.add_argument('--ldm106_2d',   default=False,        type=lambda x: x.lower() in ['true','1'])
-    parser.add_argument('--ldm134',      default=False,        type=lambda x: x.lower() in ['true','1'])
-    parser.add_argument('--seg',         default=False,        type=lambda x: x.lower() in ['true','1'])
-    parser.add_argument('--seg_visible', default=False,        type=lambda x: x.lower() in ['true','1'])
-    parser.add_argument('--useTex',      default=False,        type=lambda x: x.lower() in ['true','1'])
-    parser.add_argument('--extractTex',  default=False,        type=lambda x: x.lower() in ['true','1'])
-    parser.add_argument('--backbone',    default='resnet50')
-    parser.add_argument('--inputpath',   default='')
-    parser.add_argument('--savepath',    default='')
+    parser.add_argument('--device',       default=device)
+    parser.add_argument('--iscrop',       default=True,         type=lambda x: x.lower() in ['true','1'])
+    parser.add_argument('--detector',     default='retinaface')
+    parser.add_argument('--ldm68',        default=True,         type=lambda x: x.lower() in ['true','1'])
+    parser.add_argument('--ldm106',       default=True,         type=lambda x: x.lower() in ['true','1'])
+    parser.add_argument('--ldm106_2d',    default=False,        type=lambda x: x.lower() in ['true','1'])
+    parser.add_argument('--ldm134',       default=False,        type=lambda x: x.lower() in ['true','1'])
+    parser.add_argument('--seg',          default=False,        type=lambda x: x.lower() in ['true','1'])
+    parser.add_argument('--seg_visible',  default=False,        type=lambda x: x.lower() in ['true','1'])
+    parser.add_argument('--useTex',       default=False,        type=lambda x: x.lower() in ['true','1'])
+    parser.add_argument('--extractTex',   default=False,        type=lambda x: x.lower() in ['true','1'])
+    parser.add_argument('--batch_size',   default=8,            type=int)
+    parser.add_argument('--sid',          default=None,         type=str)
+    parser.add_argument('--aid',          default='all',        choices=['animals_task', 'gaze_task', 'ghost_task', 'lego_task', 'talk_task'])
+    parser.add_argument('--backbone',     default='resnet50')
+    parser.add_argument('--inputpath',    default='')
+    parser.add_argument('--savepath',     default='')
     return parser.parse_args([])
 
 
@@ -84,12 +85,8 @@ def back_resize_pts(pts, trans_params):
     ldms[:, 1] = 224.0 - ldms[:, 1]   # y-up → y-down in crop space
     return back_resize_ldms(ldms, trans_params)
 
-
+activities = ['animals_task', 'gaze_task', 'ghost_task', 'lego_task', 'talk_task']
 def main():
-    cli_parser = argparse.ArgumentParser()
-    cli_parser.add_argument('--sid', type=str, default=None,
-                             help="Specify a session to process")
-    cli_args = cli_parser.parse_args()
 
     main_path     = '/'.join(sys.path[0].split('/')[:-2]) + '/'
     resources_path = os.path.join(main_path, 'resources')
@@ -99,6 +96,7 @@ def main():
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     args   = build_args(device)
+    run_activities = activities if args.aid in (None, 'all') else [args.aid]
 
     # ── load models (once) ──────────────────────────────────────────────────
     recon_model      = face_model(args)
@@ -107,7 +105,7 @@ def main():
 
     for sid_path in sid_paths:
         session_id = Path(sid_path).stem
-        if cli_args.sid is not None and cli_args.sid not in session_id: continue
+        if args.sid is not None and args.sid not in session_id: continue
 
         for activity in activities:
             print(f'[3DDFA] {activity} — {session_id}')

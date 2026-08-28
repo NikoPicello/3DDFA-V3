@@ -1,0 +1,32 @@
+[001081] already staged at /home/hupba_ws/resources/sessions/001081
+[001081] running: /opt/conda/envs/dfa/bin/python 3ddfa_pipeline.py --sid 001081 (CUDA_VISIBLE_DEVICES=1)
+2026-08-25 14:40:16.934307: I tensorflow/core/platform/cpu_feature_guard.cc:193] This TensorFlow binary is optimized with oneAPI Deep Neural Network Library (oneDNN) to use the following CPU instructions in performance-critical operations:  AVX2 FMA
+To enable them in other operations, rebuild TensorFlow with the appropriate compiler flags.
+2026-08-25 14:40:17.174503: W tensorflow/compiler/xla/stream_executor/platform/default/dso_loader.cc:64] Could not load dynamic library 'libcudart.so.11.0'; dlerror: libcudart.so.11.0: cannot open shared object file: No such file or directory; LD_LIBRARY_PATH: /opt/conda/envs/dfa/lib/python3.8/site-packages/cv2/../../lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+2026-08-25 14:40:17.174601: I tensorflow/compiler/xla/stream_executor/cuda/cudart_stub.cc:29] Ignore above cudart dlerror if you do not have a GPU set up on your machine.
+2026-08-25 14:40:19.768694: W tensorflow/compiler/xla/stream_executor/platform/default/dso_loader.cc:64] Could not load dynamic library 'libnvinfer.so.7'; dlerror: libnvinfer.so.7: cannot open shared object file: No such file or directory; LD_LIBRARY_PATH: /opt/conda/envs/dfa/lib/python3.8/site-packages/cv2/../../lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+2026-08-25 14:40:19.768961: W tensorflow/compiler/xla/stream_executor/platform/default/dso_loader.cc:64] Could not load dynamic library 'libnvinfer_plugin.so.7'; dlerror: libnvinfer_plugin.so.7: cannot open shared object file: No such file or directory; LD_LIBRARY_PATH: /opt/conda/envs/dfa/lib/python3.8/site-packages/cv2/../../lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64
+2026-08-25 14:40:19.769992: W tensorflow/compiler/tf2tensorrt/utils/py_utils.cc:38] TF-TRT Warning: Cannot dlopen some TensorRT libraries. If you would like to use Nvidia GPU with TensorRT, please make sure the missing libraries mentioned above are installed properly.
+/opt/conda/envs/dfa/lib/python3.8/site-packages/albumentations/check_version.py:49: UserWarning: Error fetching version info <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1149)>
+  data = fetch_version_info()
+Traceback (most recent call last):
+  File "3ddfa_pipeline.py", line 233, in <module>
+    main()
+  File "3ddfa_pipeline.py", line 102, in main
+    recon_model      = face_model(args)
+  File "/home/hupba_ws/scripts/3DDFA-V3/model/recon.py", line 158, in __init__
+    self.net_recon.load_state_dict(torch.load("assets/net_recon.pth", map_location=torch.device('cpu'))['net_recon'])
+  File "/opt/conda/envs/dfa/lib/python3.8/site-packages/torch/nn/modules/module.py", line 2138, in load_state_dict
+    load(self, state_dict)
+  File "/opt/conda/envs/dfa/lib/python3.8/site-packages/torch/nn/modules/module.py", line 2126, in load
+    load(child, child_state_dict, child_prefix)
+  File "/opt/conda/envs/dfa/lib/python3.8/site-packages/torch/nn/modules/module.py", line 2126, in load
+    load(child, child_state_dict, child_prefix)
+  File "/opt/conda/envs/dfa/lib/python3.8/site-packages/torch/nn/modules/module.py", line 2126, in load
+    load(child, child_state_dict, child_prefix)
+  [Previous line repeated 1 more time]
+  File "/opt/conda/envs/dfa/lib/python3.8/site-packages/torch/nn/modules/module.py", line 2120, in load
+    module._load_from_state_dict(
+  File "/opt/conda/envs/dfa/lib/python3.8/site-packages/torch/nn/modules/module.py", line 2040, in _load_from_state_dict
+    param.copy_(input_param)
+KeyboardInterrupt
