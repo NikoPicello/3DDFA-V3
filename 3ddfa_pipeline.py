@@ -52,7 +52,7 @@ cam_map = {
     'N1': 'HA1', 'N2': 'HA2',
 }
 
-FRAME_BATCH = 64  # frames accumulated per recon_model forward pass; tune to GPU memory
+FRAME_BATCH = 256  # frames accumulated per recon_model forward pass; tune to GPU memory
 def build_args(device='cuda'):
     """Build a minimal args namespace that face_model and face_box expect."""
     parser = argparse.ArgumentParser()
@@ -73,7 +73,7 @@ def build_args(device='cuda'):
     parser.add_argument('--backbone',     default='resnet50')
     parser.add_argument('--inputpath',    default='')
     parser.add_argument('--savepath',     default='')
-    return parser.parse_args([])
+    return parser.parse_args()
 
 
 def back_resize_pts(pts, trans_params):
