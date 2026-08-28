@@ -1,2 +1,0 @@
-[058059] copying /home/hupba_ws/resources/all_sessions/058059 -> /home/hupba_ws/resources/sessions/058059
-[058059] ERROR copying: [Errno 28] No space left on device: '/home/hupba_ws/resources/sessions/058059.tmp'

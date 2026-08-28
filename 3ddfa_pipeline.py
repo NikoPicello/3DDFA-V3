@@ -2,23 +2,25 @@
 3DDFA-V3 pipeline — process videos and save per-frame face detections.
 
 Output format (saved as .pkl per video):
-    List of dicts, one entry per detected face per frame:
+    dict keyed by frame_index, then by face/person id, one entry per detected face:
     {
-        'frame_index': int,
-        'ldm68':   np.ndarray (68,  2) — 68 landmarks in original image space (pixels),
-        'ldm106':  np.ndarray (106, 2) — 106 landmarks in original image space,
-        'v2d':     np.ndarray (35709, 2) — BFM mesh vertices projected to image space,
-        'v3d':     np.ndarray (35709, 3) — BFM mesh vertices in camera space,
+        frame_index: {
+            pid: {
+                'ldm68':   np.ndarray (68,  2) — 68 landmarks in original image space (pixels),
+                'ldm106':  np.ndarray (106, 2) — 106 landmarks in original image space,
+            },
+            ...
+        },
+        ...
     }
 
-Note: triangle connectivity ('tri') is not included — it's a constant shared by
-every frame/video, defined in assets/face_model.npy, so it isn't duplicated here.
-Mesh rasterization (extractTex=False, seg_visible=False) is also skipped entirely
-in model/recon.py, since neither render_shape/render_face/face_texture nor tri
-are consumed by this pipeline.
+Note: the dense reconstructed mesh (v2d/v3d, 35709 vertices each) is intentionally
+not saved — at video scale (thousands of frames) it dominates file size by ~700x
+over the sparse landmarks while being fully reconstructible from the model's
+256-float coefficient vector. Only the landmarks are kept.
 
-Note: landmarks and v2d are mapped back from the internal 224×224 crop to the
-original image pixel coordinates using `back_resize_ldms` from util/preprocess.py.
+Note: landmarks are mapped back from the internal 224×224 crop to the original
+image pixel coordinates using `back_resize_ldms` from util/preprocess.py.
 """
 
 import os
@@ -169,16 +171,12 @@ def main():
 
                             ldm68  = back_resize_pts(results['ldm68'][n],  trans_params)
                             ldm106 = back_resize_pts(results['ldm106'][n], trans_params)
-                            v2d    = back_resize_pts(results['v2d'][n],    trans_params)
-                            v3d    = results['v3d'][n]
 
                             if fidx not in frame_results:
                                 frame_results[fidx] = {}
                             frame_results[fidx][pid] = {
                                 'ldm68':  ldm68.astype(np.float32),
                                 'ldm106': ldm106.astype(np.float32),
-                                'v2d':    v2d.astype(np.float32),
-                                'v3d':    v3d.astype(np.float32),
                             }
                         t_postproc += time.perf_counter() - _t0
 
