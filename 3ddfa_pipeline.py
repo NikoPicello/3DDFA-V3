@@ -52,7 +52,65 @@ cam_map = {
     'N1': 'HA1', 'N2': 'HA2',
 }
 
-FRAME_BATCH = 256  # frames accumulated per recon_model forward pass; tune to GPU memory
+FRAME_BATCH = 128 # frames accumulated per recon_model forward pass; tune to GPU memory
+
+
+def _cuda_driver_ready(attempts=3, delay=5.0):
+    """Probe the CUDA driver directly, retrying a cold/contended init.
+
+    Why not just retry torch.cuda.is_available(): torch caches the device count on the
+    FIRST query (c10::cuda::device_count() memoises it), so once it has answered 0 no
+    later call in the same process can recover — a retry loop around it is a no-op. The
+    driver API is not memoised, so probe libcuda BEFORE torch looks.
+
+    This matters here because nvidia-persistenced is not running and persistence mode is
+    off: the driver tears down per-GPU state when no client holds a device, so the first
+    client onto a cold GPU pays a full init, which under load can take >15s or fail
+    outright (observed: cuInit -> CUDA_ERROR_NOT_INITIALIZED after 16.4s). Retrying gives
+    a colliding batch of jobs a chance to serialise instead of all falling back to CPU.
+    """
+    import ctypes
+    try:
+        lib = ctypes.CDLL('libcuda.so.1')
+    except OSError as e:
+        print(f"[cuda] libcuda.so.1 not loadable: {e}", flush=True)
+        return False
+    for i in range(attempts):
+        rc = lib.cuInit(0)
+        if rc == 0:
+            return True
+        if i < attempts - 1:
+            print(f"[cuda] cuInit failed (CUDA error {rc}); retry {i + 1}/{attempts - 1} "
+                  f"in {delay}s", flush=True)
+            time.sleep(delay)
+    print(f"[cuda] cuInit still failing (CUDA error {rc}) after {attempts} attempts", flush=True)
+    return False
+
+
+def select_device():
+    """'cuda' when a GPU was requested and is usable — otherwise abort rather than
+    silently running on CPU. A CPU fallback here is never what the caller wanted: it is
+    ~100x slower, it looks like a healthy run (no GPU process in nvidia-smi/nvitop, so it
+    is easy to miss for hours), and it burns ~7 cores per job on the shared node."""
+    want = os.environ.get('CUDA_VISIBLE_DEVICES', '').strip()
+    gpu_requested = want not in ('', '-1')
+    if not gpu_requested:
+        print("[cuda] CUDA_VISIBLE_DEVICES unset -> running on CPU deliberately", flush=True)
+        return 'cpu'
+    if not _cuda_driver_ready() or not torch.cuda.is_available():
+        raise SystemExit(
+            f"CUDA_VISIBLE_DEVICES={want} was requested but the CUDA driver is "
+            f"unusable, so this job would silently run on CPU (~100x slower). "
+            f"Aborting instead.\n"
+            f"  Most likely: persistence mode is off (nvidia-persistenced not running), "
+            f"so a cold GPU's driver init fails under load.\n"
+            f"  Ask an admin for `nvidia-smi -pm 1`, and/or raise --launch-stagger in "
+            f"run_parallel_sessions.py so jobs don't all cold-init at once.\n"
+            f"  To run on CPU on purpose, launch with CUDA_VISIBLE_DEVICES=''.")
+    print(f"[cuda] driver ready; using GPU (CUDA_VISIBLE_DEVICES={want})", flush=True)
+    return 'cuda'
+
+
 def build_args(device='cuda'):
     """Build a minimal args namespace that face_model and face_box expect."""
     parser = argparse.ArgumentParser()
@@ -69,7 +127,7 @@ def build_args(device='cuda'):
     parser.add_argument('--extractTex',   default=False,        type=lambda x: x.lower() in ['true','1'])
     parser.add_argument('--batch_size',   default=8,            type=int)
     parser.add_argument('--sid',          default=None,         type=str)
-    parser.add_argument('--aid',          default='all',        choices=['animals_task', 'gaze_task', 'ghost_task', 'lego_task', 'talk_task'])
+    parser.add_argument('--activities',   default=['animals_task', 'gaze_task', 'ghost_task', 'lego_task', 'talk_task'], nargs='+')
     parser.add_argument('--backbone',     default='resnet50')
     parser.add_argument('--inputpath',    default='')
     parser.add_argument('--savepath',     default='')
@@ -87,7 +145,6 @@ def back_resize_pts(pts, trans_params):
     ldms[:, 1] = 224.0 - ldms[:, 1]   # y-up → y-down in crop space
     return back_resize_ldms(ldms, trans_params)
 
-activities = ['animals_task', 'gaze_task', 'ghost_task', 'lego_task', 'talk_task']
 def main():
 
     main_path     = '/'.join(sys.path[0].split('/')[:-2]) + '/'
@@ -96,9 +153,8 @@ def main():
     out_path       = os.path.join(resources_path, '3ddfa_results')
     sid_paths      = sorted(glob.glob(sessions_path + '/*'))
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = select_device()
     args   = build_args(device)
-    run_activities = activities if args.aid in (None, 'all') else [args.aid]
 
     # ── load models (once) ──────────────────────────────────────────────────
     recon_model      = face_model(args)
@@ -109,7 +165,7 @@ def main():
         session_id = Path(sid_path).stem
         if args.sid is not None and args.sid not in session_id: continue
 
-        for activity in activities:
+        for activity in args.activities:
             print(f'[3DDFA] {activity} — {session_id}')
             vid_paths = glob.glob(os.path.join(sid_path, activity) + '/*')
             vid_paths = [v for v in vid_paths if not ('E1.mp4' in v or 'E2.mp4' in v)]

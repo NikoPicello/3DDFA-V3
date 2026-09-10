@@ -45,6 +45,8 @@ Usage:
     python run_parallel_sessions.py                  # watch all_sessions forever
     python run_parallel_sessions.py 000000 004096     # just these, then exit
     python run_parallel_sessions.py --gpus 0,1,2,3    # restrict the GPU whitelist
+    python run_parallel_sessions.py --gpus 3,4,5,6 --no-gpu-check   # trust that list,
+                                                       # never call nvidia-smi
     python run_parallel_sessions.py --dry-run          # log planned actions only
 
 --3ddfa-args grabs every token after it (argparse REMAINDER), so it must come
@@ -74,6 +76,11 @@ SESSIONS_DIR = RESOURCES_DIR / "sessions"
 DDFA_RESULTS_DIR = RESOURCES_DIR / "3ddfa_results"
 
 DEFAULT_POLL_INTERVAL = 15.0
+# Gap between consecutive launches. With nvidia-persistenced off (persistence mode
+# Disabled), the first client onto a cold GPU triggers a full driver init; several jobs
+# doing that at the same instant contend and some fail with CUDA_ERROR_NOT_INITIALIZED,
+# silently falling back to CPU. Staggering lets them serialise.
+DEFAULT_LAUNCH_STAGGER = 15.0
 
 
 def free_gpu_indices(whitelist: set[int] | None = None) -> list[int]:
@@ -81,11 +88,11 @@ def free_gpu_indices(whitelist: set[int] | None = None) -> list[int]:
     try:
         gpus_out = subprocess.run(
             ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
-            capture_output=True, text=True, check=True, timeout=15,
+            capture_output=True, text=True, check=True, timeout=60,
         ).stdout
         apps_out = subprocess.run(
             ["nvidia-smi", "--query-compute-apps=gpu_uuid", "--format=csv,noheader"],
-            capture_output=True, text=True, check=True, timeout=15,
+            capture_output=True, text=True, check=True, timeout=60,
         ).stdout
     except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         raise SystemExit(f"nvidia-smi query failed: {e}") from e
@@ -241,6 +248,18 @@ def main() -> int:
                     help="remaining args forwarded to 3ddfa_pipeline.py. Must be LAST "
                          "on the command line -- it swallows everything after it, "
                          "including session ids.")
+    ap.add_argument("--no-gpu-check", action="store_true",
+                    help="trust --gpus as-is: use exactly those GPUs and never run "
+                         "nvidia-smi. Requires --gpus. Use when you've already checked "
+                         "they're free (nvitop) and the nvidia-smi probe is stalling "
+                         "under load. Note this drops the guard against taking a GPU "
+                         "another user grabs mid-run.")
+    ap.add_argument("--launch-stagger", type=float, default=DEFAULT_LAUNCH_STAGGER,
+                    help=f"seconds to wait between consecutive session launches "
+                         f"(default: {DEFAULT_LAUNCH_STAGGER}). Persistence mode is off on "
+                         f"this node, so the first job onto a cold GPU pays a slow driver "
+                         f"init; launching several at once makes them collide and fall back "
+                         f"to CPU. 0 disables.")
     ap.add_argument("--poll-interval", type=float, default=DEFAULT_POLL_INTERVAL,
                     help=f"seconds between nvidia-smi/candidate re-checks (default: "
                          f"{DEFAULT_POLL_INTERVAL})")
@@ -251,6 +270,13 @@ def main() -> int:
     whitelist = None
     if args.gpus:
         whitelist = {int(g) for g in args.gpus.replace(",", " ").split()}
+    if args.no_gpu_check:
+        # Without a probe there is nothing to enumerate GPUs with, so the whitelist
+        # IS the GPU list and must be given explicitly.
+        if not whitelist:
+            raise SystemExit("--no-gpu-check requires --gpus (e.g. --gpus 3,4,5,6)")
+        print(f"--no-gpu-check: using GPUs {sorted(whitelist)} as given, "
+              f"no nvidia-smi probing")
 
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -284,11 +310,18 @@ def main() -> int:
                     known.update(new)
 
             active = runner.active_snapshot()
-            usable = [g for g in free_gpu_indices(whitelist) if g not in active]
+            # --no-gpu-check: the whitelist is taken as the free list, so scheduling
+            # runs purely off our own in-process `active` set (a GPU frees up as soon
+            # as our session on it finishes).
+            pool = sorted(whitelist) if args.no_gpu_check else free_gpu_indices(whitelist)
+            usable = [g for g in pool if g not in active]
             for gpu in usable:
                 if not candidates:
                     break
                 runner.launch(candidates.popleft(), gpu)
+                # Don't let the next job cold-init a GPU while this one still is.
+                if candidates and args.launch_stagger > 0 and not args.dry_run:
+                    time.sleep(args.launch_stagger)
 
             time.sleep(args.poll_interval)
     except KeyboardInterrupt:
