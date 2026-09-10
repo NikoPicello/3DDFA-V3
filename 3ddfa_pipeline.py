@@ -1,6 +1,14 @@
 """
 3DDFA-V3 pipeline — process videos and save per-frame face detections.
 
+Reads either video files directly (default) or pre-extracted frame images,
+selected via --use_video true/false. In image mode, each `data_path` under
+resources/sessions/<sid>/<activity>/ is a folder named like the camera (e.g.
+FC1/) holding that camera's frames as 000000.jpeg, 000001.jpeg, ... -- exactly
+what ../../scripts/extract_frames.py produces. Frame index 0 in that folder
+must correspond to frame 0 of the source video, since results are keyed by
+frame index and downstream pipelines correlate across modalities on it.
+
 Output format (saved as .pkl per video):
     dict keyed by frame_index, then by face/person id, one entry per detected face:
     {
@@ -128,6 +136,7 @@ def build_args(device='cuda'):
     parser.add_argument('--batch_size',   default=8,            type=int)
     parser.add_argument('--sid',          default=None,         type=str)
     parser.add_argument('--activities',   default=['animals_task', 'gaze_task', 'ghost_task', 'lego_task', 'talk_task'], nargs='+')
+    parser.add_argument('--use_video',    default=True,         type=lambda x: x.lower() in ['true','1'])
     parser.add_argument('--backbone',     default='resnet50')
     parser.add_argument('--inputpath',    default='')
     parser.add_argument('--savepath',     default='')
@@ -167,14 +176,24 @@ def main():
 
         for activity in args.activities:
             print(f'[3DDFA] {activity} — {session_id}')
-            vid_paths = glob.glob(os.path.join(sid_path, activity) + '/*')
-            vid_paths = [v for v in vid_paths if not ('E1.mp4' in v or 'E2.mp4' in v)]
+            if args.use_video:
+                # *.mp4 only -- an image-mode frame folder sitting alongside the
+                # videos (same activity dir) must not be picked up as a video path
+                data_paths = glob.glob(os.path.join(sid_path, activity, '*.mp4'))
+                data_paths = [v for v in data_paths if not ('E1.mp4' in v or 'E2.mp4' in v)]
+            else:
+                # one sub-folder per camera, each holding that camera's frames
+                data_paths = [p for p in glob.glob(os.path.join(sid_path, activity) + '/*') if os.path.isdir(p)]
 
-            for vid_path in vid_paths:
-                video_name = Path(vid_path).stem
+            for data_path in data_paths:
+                video_name = Path(data_path).stem
 
-                cap = cv.VideoCapture(vid_path)
-                total_frames = int(cap.get(cv.CAP_PROP_FRAME_COUNT))
+                if args.use_video:
+                    cap = cv.VideoCapture(data_path)
+                    total_frames = int(cap.get(cv.CAP_PROP_FRAME_COUNT))
+                else:
+                    image_paths = sorted(glob.glob(os.path.join(data_path, '*.jpeg')))
+                    total_frames = len(image_paths)
 
                 curr_out_path = os.path.join(out_path, session_id, activity)
                 os.makedirs(curr_out_path, exist_ok=True)
@@ -184,17 +203,12 @@ def main():
                 frames_buf    = []  # PIL images
                 fidxs_buf     = []  # original frame indices
 
-                t_read = t_detect = t_recon = t_postproc = 0.0
-
                 def flush():
-                    nonlocal t_detect, t_recon, t_postproc
                     if not frames_buf:
                         return
 
                     # ── batch face detection across all buffered frames ───────
-                    _t0 = time.perf_counter()
                     det_results = facebox_detector(frames_buf)
-                    t_detect += time.perf_counter() - _t0
 
                     # collect face crops from all frames into one sample list
                     samples      = []
@@ -212,14 +226,11 @@ def main():
 
                     if samples:
                         # ── single recon_model forward pass for all faces ─────
-                        _t0 = time.perf_counter()
                         batch_tensor = torch.cat(samples, dim=0).to(args.device)
                         recon_model.input_img = batch_tensor
                         with torch.no_grad():
                             results = recon_model.forward()
-                        t_recon += time.perf_counter() - _t0
 
-                        _t0 = time.perf_counter()
                         for n in range(len(samples)):
                             fidx         = sample_fidx[n]
                             pid          = sample_pid[n]
@@ -234,49 +245,36 @@ def main():
                                 'ldm68':  ldm68.astype(np.float32),
                                 'ldm106': ldm106.astype(np.float32),
                             }
-                        t_postproc += time.perf_counter() - _t0
 
                     frames_buf.clear()
                     fidxs_buf.clear()
 
-                def log_timing(n_frames):
-                    elapsed = time.perf_counter() - t_video_start
-                    t_other = elapsed - t_read - t_detect - t_recon - t_postproc
-                    print(f'  [{n_frames} frames | {elapsed:.1f}s elapsed]'
-                          f'  read {t_read:.1f}s ({100*t_read/elapsed:.0f}%)'
-                          f'  detect {t_detect:.1f}s ({100*t_detect/elapsed:.0f}%)'
-                          f'  recon {t_recon:.1f}s ({100*t_recon/elapsed:.0f}%)'
-                          f'  post {t_postproc:.1f}s ({100*t_postproc/elapsed:.0f}%)'
-                          f'  other {t_other:.1f}s ({100*t_other/elapsed:.0f}%)')
-
                 t_video_start = time.perf_counter()
                 for fidx in trange(total_frames, desc=video_name):
-                    _t0 = time.perf_counter()
-                    ret, frame_bgr = cap.read()
-                    if not ret:
-                        break
-                    # frame_bgr = cv.resize(frame_bgr, (1280, 720))
+                    if args.use_video:
+                        ret, frame_bgr = cap.read()
+                        if not ret:
+                            break
+                        # frame_bgr = cv.resize(frame_bgr, (1280, 720))
+                    else:
+                        frame_bgr = cv.imread(image_paths[fidx])
+                        if frame_bgr is None:
+                            print(f'  [warn] unreadable frame, skipping: {image_paths[fidx]}')
+                            continue
                     frames_buf.append(Image.fromarray(cv.cvtColor(frame_bgr, cv.COLOR_BGR2RGB)))
                     fidxs_buf.append(fidx)
-                    t_read += time.perf_counter() - _t0
                     if len(frames_buf) == FRAME_BATCH:
                         flush()
-                    if (fidx + 1) % 500 == 0:
-                        log_timing(fidx + 1)
 
                 flush()  # process any remaining frames
                 t_video_total = time.perf_counter() - t_video_start
 
-                t_other = t_video_total - t_read - t_detect - t_recon - t_postproc
                 n_frames = fidx + 1 if 'fidx' in dir() else total_frames
-                print(f'  Timing over {n_frames} frames (total {t_video_total:.1f}s):')
-                print(f'    read/decode : {t_read:.2f}s  ({100*t_read/t_video_total:.1f}%)')
-                print(f'    face detect : {t_detect:.2f}s  ({100*t_detect/t_video_total:.1f}%)')
-                print(f'    recon fwd   : {t_recon:.2f}s  ({100*t_recon/t_video_total:.1f}%)')
-                print(f'    post-proc   : {t_postproc:.2f}s  ({100*t_postproc/t_video_total:.1f}%)')
-                print(f'    other       : {t_other:.2f}s  ({100*t_other/t_video_total:.1f}%)')
+                fps = n_frames / t_video_total if t_video_total > 0 else 0.0
+                print(f'  {n_frames} frames in {t_video_total:.1f}s ({fps:.1f} fps)')
 
-                cap.release()
+                if args.use_video:
+                    cap.release()
 
                 with open(out_pkl, 'wb') as f:
                     pickle.dump(frame_results, f)
