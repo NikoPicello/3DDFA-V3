@@ -254,6 +254,10 @@ def main() -> int:
                          "they're free (nvitop) and the nvidia-smi probe is stalling "
                          "under load. Note this drops the guard against taking a GPU "
                          "another user grabs mid-run.")
+    ap.add_argument("--use-video", action="store_true",
+                    help="forward --use_video to 3ddfa_pipeline.py, reading *.mp4 "
+                         "directly instead of the default pre-extracted frame folders "
+                         "(see ../../scripts/extract_frames.py).")
     ap.add_argument("--launch-stagger", type=float, default=DEFAULT_LAUNCH_STAGGER,
                     help=f"seconds to wait between consecutive session launches "
                          f"(default: {DEFAULT_LAUNCH_STAGGER}). Persistence mode is off on "
@@ -297,6 +301,9 @@ def main() -> int:
         known.update(new)
         print(f"auto-discovery mode: watching {ALL_SESSIONS_DIR} forever "
               f"(Ctrl-C to stop)")
+
+    if args.use_video:
+        args.ddfa_args = [*args.ddfa_args, "--use_video"]
 
     runner = Runner(log_dir, args.ddfa_args, args.dry_run)
 

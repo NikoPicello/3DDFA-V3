@@ -1,8 +1,8 @@
 """
 3DDFA-V3 pipeline — process videos and save per-frame face detections.
 
-Reads either video files directly (default) or pre-extracted frame images,
-selected via --use_video true/false. In image mode, each `data_path` under
+Reads pre-extracted frame images by default, or video files directly with
+--use_video. In image mode (default), each `data_path` under
 resources/sessions/<sid>/<activity>/ is a folder named like the camera (e.g.
 FC1/) holding that camera's frames as 000000.jpeg, 000001.jpeg, ... -- exactly
 what ../../scripts/extract_frames.py produces. Frame index 0 in that folder
@@ -136,7 +136,8 @@ def build_args(device='cuda'):
     parser.add_argument('--batch_size',   default=8,            type=int)
     parser.add_argument('--sid',          default=None,         type=str)
     parser.add_argument('--activities',   default=['animals_task', 'gaze_task', 'ghost_task', 'lego_task', 'talk_task'], nargs='+')
-    parser.add_argument('--use_video',    default=True,         type=lambda x: x.lower() in ['true','1'])
+    parser.add_argument('--use_video',    action='store_true')
+    parser.add_argument('--max-frames',   default=-1,           type=int)
     parser.add_argument('--backbone',     default='resnet50')
     parser.add_argument('--inputpath',    default='')
     parser.add_argument('--savepath',     default='')
@@ -194,6 +195,8 @@ def main():
                 else:
                     image_paths = sorted(glob.glob(os.path.join(data_path, '*.jpeg')))
                     total_frames = len(image_paths)
+                if args.max_frames >= 0:
+                    total_frames = min(total_frames, args.max_frames)
 
                 curr_out_path = os.path.join(out_path, session_id, activity)
                 os.makedirs(curr_out_path, exist_ok=True)
